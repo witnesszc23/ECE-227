@@ -1,0 +1,139 @@
+---
+title: "227 Final Project"
+author: "Group 4"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(igraph)
+library(blockmodels)
+library(clue)
+library(foreach)
+library(doMC)
+library(latentnet)
+library(network)
+library(intergraph)
+library(amen)
+registerDoMC(8)
+ceo = read_graph("~/Downloads/network.gml", format="gml")
+```
+
+# Part 1: Introduction
+This bipartite network contains membership information of corporate executive officers in social organizations such as clubs and boards. It shows which organizations (clubs) they belong from the Minneapolis-St. Paul area. An edge between a person and a social organization shows that the person is a member. This data is originally collected by Galaskiewicz in 1985.
+
+# Part 2: Basic characteristics of the network
+
+## Basic information
+```{r}
+gorder(ceo)
+gsize(ceo)
+```
+
+There are 40 nodes and 95 edges in the graph.
+
+## Centrality measures
+
+```{r}
+deg = degree(ceo)
+betweenness_values <- betweenness(ceo)
+closeness_values <- closeness(ceo)
+eigenvector_values <- eigen_centrality(ceo)$vector
+degree_values <- degree(ceo)
+which.max(betweenness_values)
+which.max(closeness_values)
+which.max(eigenvector_values)
+which.max(deg)
+```
+
+From the analysis, we learn that node 26 has the highest scores in all four features. This indicates that it has the most direct connections and the most intermediate positions on the paths connecting other node pairs in the network. It has the shortest average distance to all other nodes in the network and its connected nodes are also important nodes in the network. Such a node may be critical to the flow and functioning of the network.
+
+```{r}
+global_clustering <- transitivity(ceo, type="global")
+avg_path_length <- average.path.length(ceo)
+print(paste("Global clustering coefficient is:", global_clustering))
+print(paste("Average path length is:", avg_path_length))
+```
+
+With the global clustering coefficients, we learn that there are no tightly connected groups of nodes in this network and the network is very sparse. The average path length indicates that any two nodes in the network can reach each other in few steps. With this data we can also learn that this network is not characterized by a small world. Although it has small average path lengths, it does not have high clustering coefficients.
+
+# Part 3: Different community detection process & Visualizing community structure
+## Louvain algorithm
+```{r}
+clceo <- cluster_louvain(ceo)
+modularity(clceo)
+length(clceo)
+```
+Combining these two results, we can conclude that there are several more distinct clusters in the network, but the modularity value is rather small which means the Louvain algorithm is not so good in our cluster partition.
+
+```{r}
+plot(x=clceo, y=ceo,vertex.size=8,vertex.label.cex=0.4)
+```
+From the plot, it can be concluded that the node connections within communities are denser, while the connections between communities are lighter. However, we still want to use better methods to detect communities.
+
+## SBM
+Fitting SBM and pick the number of communities that maximizes ICL.
+```{r}
+ceo_adj = as_adj(ceo, sparse = FALSE)
+ceo_SBM = BM_bernoulli(membership_type = "SBM", adj = ceo_adj, verbosity = 0, plotting = '')
+ceo_SBM$estimate()
+ceo_SBM
+plot(ceo_SBM$ICL)
+kmax = which.max(ceo_SBM$ICL)
+```
+
+From above, we have learned that 3 is the number of communities that maximizes the ICL and we will use it for further analysis.
+
+```{r}
+ceo_SBM$model_parameters[[3]]
+ceo_SBM$plot_parameters(3)
+```
+
+The text output shows a 3x3 matrix under $pi which represents the connection probabilities between the members of each of the three communities detected. The diagonal elements of this matrix indicates the inter-community connection probabilities, while the off-diagonal elements represent intra-community connection probabilities.
+
+From the plot, we can conclude that community 2 has the strongest inter-community connection probability. Community 1 and community 3 have much lower inter-community connection probabilities. The off-diagonal blocks indicate that the intra-community connection probabilities are generally low, with slightly stronger connections between community 2 and community 3. These observations suggest that Community 2 is the most tightly knit group, with community 1 and community 3 being less cohesive. The communities are relatively distinct from one another with limited inter-community connections, especially between community 1 and the other two communities. In summary, the results suggest that the network can be partitioned into three communities with varying degrees of cohesion, and there is a certain level of separation between these communities.
+
+```{r}
+ceo_SBM$plot_obs_pred(3)
+```
+
+From the observation of observed and predicted adjacency matrices, we could conclude some important facts. The model predicts that there is a high density of connections within one of the communities, as shown by the black square in the lower-right corner of the heatmap. The observed data shows a similar pattern to the predicted data, which suggests that the SBM is doing a good job of modeling the community structure of the network. The communities seem to have varying levels of connectivity, with one community being much more densely connected than the others. In summary, the SBM seems to be capturing the general structure of the network and its communities quite well, with particularly strong performance in one highly cohesive community. However, there might be some room for refinement in the model parameters to better fit the observed data in the less cohesive communities.
+
+At last, I want to visualize the community structure again fitting SBM
+```{r}
+l <- layout_with_fr(ceo)
+plot(ceo, edge.width = 1, edge.color = "gray", edge.arrow.mode = 0,
+     vertex.color = apply(ceo_SBM$memberships[[kmax]]$Z,1,which.max),
+     layout = l, vertex.size = 15)
+```
+
+From the plot, we can conclude that there seems to be a clear division of communities within the network, indicated by the clustering of similarly colored nodes. The algorithm has detected at least three distinct communities, as shown by the three different colors of the nodes. Certain nodes are more central within their respective communities suggesting they might be key players or highly connected within their community. The distribution of the nodes suggests that the green community is denser with more interconnections, while the blue and yellow communities seem to be more spread out with some potential sub-clusters. The network visualization supports the notion that the SBM has been effective in identifying communities within the network. Each community's cohesion and the interaction between nodes within communities are visually represented.
+
+## Spectral clustering
+```{r}
+ceo_graph <- graph.adjacency(ceo_adj, mode = "undirected",diag = FALSE)
+laplacian <- laplacian_matrix(ceo_graph)
+eigen <- eigen(laplacian)
+# Select the eigenvectors corresponding to the k smallest non-zero eigenvalues
+k <- 3
+V <- eigen$vectors[,1:k]
+V <- V / rowSums(V^2)^0.5
+
+# K-means clustering on the reduced space
+clusters <- kmeans(V, centers = k, nstart = 25)
+cluster_assignments <- clusters$cluster
+plot(ceo_graph,
+     vertex.color = cluster_assignments,
+     vertex.size = 15,
+     vertex.label.cex = 1, 
+     edge.arrow.size = 0.5)
+```
+
+From the graph, we can see that the spectral clustering algorithm has separated the nodes into three distinct communities. Since nodes of different colors that are closely connected, this could indicate interaction between different communities. Moreover, spectral clustering method typically reveals more nuanced groupings based on the eigenvalues of the Laplacian matrix. This is useful for highlighting less obvious structures within the network. We can see certain peripheral nodes are not strongly connected are placed in the same cluster, which suggests deeper similarities between them that are not solely based on immediate connections. Spectral clustering may provide a contrast in findings compared to SBM due to its focus on the network's spectral properties. This method can reveal clusters that are less defined by immediate connectivity and more by global network structure.
+
+# Part 4: Conclusion
+Based on the plots and processes above, we think that using SBM or Louvain seems proper in detecting this dataset's community structure. Louvain seems to have identified the most distinct communities and SBM provides valuable insights about the network's block structure.
